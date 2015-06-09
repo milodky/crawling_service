@@ -9,6 +9,7 @@ module CrawlingService
       def initialize(params = {})
         @params = params
         @bunny_options = RabbitMQOptions.new(params)
+        @rabbit = RabbitMQClient.new(@bunny_options.to_hash)
 
       end
 
@@ -22,7 +23,6 @@ module CrawlingService
       def logger(env)
         page = env[:page]
         return if page.nil?
-        @rabbit ||= RabbitMQClient.new(@bunny_options.to_hash)
 
         weibo = page.search(FLAG)
         details = weibo.map(&:text)
@@ -36,11 +36,7 @@ module CrawlingService
     class RabbitMQOptions < Struct.new(:hostname, :host, :port, :username, :password, :vhost)
       def initialize(params)
         params.each { |k, v| self[k] = v}
-        if self[:host] && self[:hostname].nil?
-          login    = [self.delete(:username), self.delete(:password)].compact.join(':')
-          endpoint = [self.delete(:host), self.delete(:port)].compact.join(':')
-          self[:hostname] = [login, endpoint].reject(&:empty?).join('@')
-        elsif self[:host].nil? && self[:hostname].nil?
+        if self[:host].nil? && self[:hostname].nil?
           raise ArgumentError.new('Missing endpoint for RabbitMQ!')
         end
       end
@@ -56,19 +52,28 @@ module CrawlingService
       end
     end
 
-    #
+    # still quite naive
     class RabbitMQClient
       def initialize(params)
         @connection = Bunny.new(params)
         @connection.start
         @channel = @connection.create_channel
-        @queue   = @channel.queue('weibo_logger')
+        @queue   = @channel.queue('weibo_logger') # weibo logger is the routing key
       end
 
       def publish(messages)
         messages = Array.wrap(messages)
         messages.each do |message|
-          @channel.default_exchange.publish(message, :routing_key => @queue.name)
+          begin
+            @channel.default_exchange.publish(message, :routing_key => @queue.name, :persistent => true)
+          rescue => err
+            sleep(1)
+            CrawlingService.log(err.message)
+            CrawlingService.log(err.backtrace)
+            retry
+          end
+
+
         end
 
       end

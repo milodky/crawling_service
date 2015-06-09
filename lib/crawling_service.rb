@@ -25,6 +25,7 @@ module CrawlingService
   end
 
   def self.log(message)
+    @logger = Logger.new(STDOUT) if @logger.nil?
     @logger.info(message)
   end
 
